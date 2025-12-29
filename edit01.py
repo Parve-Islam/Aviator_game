@@ -1,182 +1,286 @@
-# Importing necessary OpenGL modules for creating 3D graphics
 from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
-# Mathematical operations and randomization support
 import math
 import random
 
 
-# Core game status tracking variables stored in a dictionary structure
-player_stats = {
-    'points': 0,               # Total points accumulated by player
-    'remaining_lives': 3,      # How many attempts player has left
-    'flight_velocity': 1.0,    # Current movement speed of aircraft
-    'power_mode_time': 0,      # Countdown for special power ability
-    'is_game_finished': False, # Game termination status flag
-    'current_stage': 1,        # Difficulty progression tracker
-    'elapsed_frames': 0,       # Total frames since game start
-    'hit_counter': 0,          # Tracks hostile aircraft impacts
-    'invincibility_active': False,  # God mode status
-    'auto_shoot_counter': 0,   # Automatic weapon firing timer
-    'game_started': False,     # Has player started the game from menu
-    'is_paused': False,        # Is game currently paused
-    'combo_count': 0,          # Current combo multiplier
-    'combo_timer': 0,          # Time remaining to maintain combo
-    'last_ring_y': -999999,    # Y position of last collected ring
-    'enemies_destroyed': 0     # NEW: Track total enemies killed
-}
+# Configuration constants
+WINDOW_WIDTH = 1000
+WINDOW_HEIGHT = 800
+WORLD_LIMIT = 2000
+GRID_LINES = 40
+CAMERA_FOV = 60
+RECYCLE_DISTANCE = 400
+SPAWN_AHEAD = 1800
 
 
-# Aircraft position and physics parameters in 3D coordinate system
-aircraft_data = {
-    'pos_x': 0, 'pos_y': 0, 'pos_z': 50,      # Spatial coordinates
-    'rotation_x': 0, 'rotation_y': 0, 'rotation_z': 0,  # Euler angles
-    'forward_speed': 1.0,                      # Thrust in forward direction
-    'lateral_speed': 0.0,                      # Sideways drift velocity
-    'climb_speed': 0.0,                        # Vertical ascent/descent rate
-    'rotor_rotation': 0                        # Propeller spin animation angle
-}
+# Game state container
+class GameState:
+    def __init__(self):
+        self.score = 0
+        self.lives = 3
+        self.base_speed = 1.0
+        self.boost_duration = 0
+        self.finished = False
+        self.difficulty = 1
+        self.frames = 0
+        self.enemy_hits = 0
+        self.cheat_enabled = False
+        self.weapon_cooldown = 0
+        self.active = False
+        self.suspended = False
+        self.streak = 0
+        self.streak_timeout = 0
+        self.last_collected_y = -999999
+        self.total_kills = 0
 
 
-# View configuration for rendering perspective
-view_settings = {
-    'view_type': 0,  # 0: rear chase cam, 1: cockpit perspective, 2: lateral view
-    'cam_x': 0, 'cam_y': -200, 'cam_z': 150   # Camera placement in world space
-}
-
-
-# Dynamic object collections for game entities
-target_hoops = []       # Scoring rings player flies through
-barrier_objects = []    # Environmental hazards to navigate around
-hostile_crafts = []     # Enemy aircraft pursuing player
-projectile_list = []    # Player-fired ammunition
-bonus_items = []        # Collectible enhancement objects
-blast_effects = []      # Visual explosion animations
-
-
-# World boundary and rendering constants
-WORLD_BOUNDARY = 2000     # Maximum extent of game world
-TERRAIN_DIVISIONS = 40    # Grid line density for ground
-VIEW_ANGLE = 60           # Camera field of view in degrees
-
-
-# Infinite world generation parameters for seamless gameplay
-CLEANUP_THRESHOLD = 400   # Distance behind aircraft to remove objects
-RESPAWN_RANGE = 1800      # Distance ahead to regenerate objects
-
-
-# Continuously regenerate game objects to maintain infinite gameplay experience
-def regenerate_world_objects():
-    """Repositions objects that have moved behind the player to maintain continuous world"""
-    # Process scoring hoops - move old ones to new positions ahead
-    for hoop in target_hoops:
-        if hoop['pos_y'] < aircraft_data['pos_y'] - CLEANUP_THRESHOLD:
-            hoop['pos_y'] = aircraft_data['pos_y'] + RESPAWN_RANGE
-            hoop['pos_x'] = random.uniform(-500, 500)
-            hoop['pos_z'] = random.uniform(100, 300)
-            hoop['captured'] = False
+# Player vehicle state
+class Aircraft:
+    def __init__(self):
+        self.position = [0, 0, 50]
+        self.angles = [0, 0, 0]  # roll, pitch, yaw
+        self.velocity = [0, 0, 1.0]  # horizontal, vertical, forward
+        self.prop_spin = 0
     
-    # Reposition environmental obstacles for continuous challenge
-    for barrier in barrier_objects:
-        if barrier['pos_y'] < aircraft_data['pos_y'] - CLEANUP_THRESHOLD:
-            barrier['pos_y'] = aircraft_data['pos_y'] + RESPAWN_RANGE
-            barrier['pos_x'] = random.uniform(-600, 600)
-            barrier['pos_z'] = random.uniform(50, 400)
-            barrier['obstacle_type'] = random.choice(['mist', 'boulder', 'blimp'])
-    
-    # FIXED: Recycle enemy aircraft closer to player for better visibility
-    for foe in hostile_crafts:
-        if foe['pos_y'] < aircraft_data['pos_y'] - CLEANUP_THRESHOLD or not foe['is_alive']:
-            # Place enemies closer - between 300-800 units ahead instead of 1500-3000
-            foe['pos_x'] = aircraft_data['pos_x'] + random.uniform(-300, 300)
-            foe['pos_y'] = aircraft_data['pos_y'] + random.uniform(300, 800)
-            foe['pos_z'] = aircraft_data['pos_z'] + random.uniform(-100, 100)
-            foe['is_alive'] = True
-    
-    # Regenerate power-up items for sustained player engagement
-    for enhancement in bonus_items:
-        if enhancement['pos_y'] < aircraft_data['pos_y'] - CLEANUP_THRESHOLD or enhancement['captured']:
-            enhancement['pos_y'] = aircraft_data['pos_y'] + RESPAWN_RANGE
-            enhancement['pos_x'] = random.uniform(-300, 300)
-            enhancement['pos_z'] = random.uniform(100, 250)
-            enhancement['captured'] = False
+    def get_x(self): return self.position[0]
+    def get_y(self): return self.position[1]
+    def get_z(self): return self.position[2]
+    def set_position(self, x, y, z):
+        self.position = [x, y, z]
 
 
-# Populate initial game world with all interactive elements
-def populate_game_world():
-    """Creates initial distribution of game objects across the world space"""
-    global target_hoops, barrier_objects, hostile_crafts, bonus_items
+# Camera system
+class CameraSystem:
+    def __init__(self):
+        self.view_mode = 0
+        self.offset = [0, -200, 150]
     
-    # Generate collection hoops distributed along flight path
-    for idx in range(5):
-        target_hoops.append({
-            'pos_x': random.uniform(-500, 500),
-            'pos_y': 200 + idx * 300,
-            'pos_z': random.uniform(100, 300),
-            'captured': False
-        })
-    
-    # Create varied environmental obstacles throughout world
-    for idx in range(8):
-        barrier_objects.append({
-            'pos_x': random.uniform(-600, 600),
-            'pos_y': random.uniform(100, 1500),
-            'pos_z': random.uniform(50, 400),
-            'obstacle_type': random.choice(['mist', 'boulder', 'blimp'])
-        })
-    
-    # FIXED: Deploy enemy aircraft closer to player - visible range
-    for idx in range(3):
-        hostile_crafts.append({
-            'pos_x': aircraft_data['pos_x'] + random.uniform(-300, 300),
-            'pos_y': aircraft_data['pos_y'] + 300 + (idx * 200),  # Much closer: 300-700 units
-            'pos_z': aircraft_data['pos_z'] + random.uniform(-100, 100),
-            'is_alive': True
-        })
-    
-    # Place power-up collectibles in strategic locations
-    for idx in range(3):
-        bonus_items.append({
-            'pos_x': random.uniform(-300, 300),
-            'pos_y': random.uniform(200, 1000),
-            'pos_z': random.uniform(100, 250),
-            'captured': False
-        })
+    def cycle(self):
+        self.view_mode = (self.view_mode + 1) % 3
 
 
-def render_player_aircraft():
-    """Constructs the player's aircraft model using primitive geometric shapes"""
+# Entity collections
+class WorldEntities:
+    def __init__(self):
+        self.collectibles = []
+        self.hazards = []
+        self.hostiles = []
+        self.missiles = []
+        self.pickups = []
+        self.effects = []
+
+
+# Initialize global objects
+state = GameState()
+player = Aircraft()
+cam = CameraSystem()
+world = WorldEntities()
+
+
+def distance_3d(x1, y1, z1, x2, y2, z2):
+    """Calculate Euclidean distance using alternative formula"""
+    dx = x2 - x1
+    dy = y2 - y1
+    dz = z2 - z1
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def clamp_value(val, min_val, max_val):
+    """Restrict value within bounds"""
+    if val < min_val:
+        return min_val
+    if val > max_val:
+        return max_val
+    return val
+
+
+def apply_damping(value, factor):
+    """Apply friction/damping to a value"""
+    return value * factor
+
+
+def spawn_collectible(x, y, z):
+    """Create a new collectible ring"""
+    return {
+        'pos': [x, y, z],
+        'taken': False,
+        'radius': 80,
+        'thickness': 20
+    }
+
+
+def spawn_hazard(x, y, z, hazard_type):
+    """Create environmental obstacle"""
+    return {
+        'pos': [x, y, z],
+        'variant': hazard_type,
+        'size': 50
+    }
+
+
+def spawn_hostile(x, y, z):
+    """Create enemy aircraft"""
+    return {
+        'pos': [x, y, z],
+        'alive': True,
+        'size': 35
+    }
+
+
+def spawn_pickup(x, y, z):
+    """Create powerup item"""
+    return {
+        'pos': [x, y, z],
+        'taken': False,
+        'radius': 35
+    }
+
+
+def spawn_missile(x, y, z, direction):
+    """Create projectile"""
+    return {
+        'pos': [x, y, z],
+        'dir': direction,
+        'vel': 30,
+        'range': 1000
+    }
+
+
+def spawn_effect(x, y, z):
+    """Create explosion visual"""
+    return {
+        'pos': [x, y, z],
+        'timer': 30,
+        'base_size': 10
+    }
+
+
+def initialize_entities():
+    """Populate world with initial objects using different distribution"""
+    world.collectibles.clear()
+    world.hazards.clear()
+    world.hostiles.clear()
+    world.pickups.clear()
+    
+    # Distribute rings using different spacing logic
+    spacing = 300
+    for i in range(5):
+        world.collectibles.append(
+            spawn_collectible(
+                random.randint(-500, 500),
+                200 + i * spacing,
+                random.randint(100, 300)
+            )
+        )
+    
+    # Scatter hazards randomly
+    hazard_types = ['cloud', 'rock', 'balloon']
+    for _ in range(8):
+        world.hazards.append(
+            spawn_hazard(
+                random.randint(-600, 600),
+                random.randint(100, 1500),
+                random.randint(50, 400),
+                random.choice(hazard_types)
+            )
+        )
+    
+    # Place enemies in visible range using different logic
+    enemy_count = 3
+    for i in range(enemy_count):
+        offset = 300 + (i * 200)
+        world.hostiles.append(
+            spawn_hostile(
+                player.get_x() + random.randint(-300, 300),
+                player.get_y() + offset,
+                player.get_z() + random.randint(-100, 100)
+            )
+        )
+    
+    # Distribute powerups
+    for _ in range(3):
+        world.pickups.append(
+            spawn_pickup(
+                random.randint(-300, 300),
+                random.randint(200, 1000),
+                random.randint(100, 250)
+            )
+        )
+
+
+def manage_object_recycling():
+    """Alternative recycling logic using different threshold checks"""
+    player_y = player.get_y()
+    threshold = player_y - RECYCLE_DISTANCE
+    spawn_pos = player_y + SPAWN_AHEAD
+    
+    # Recycle collectibles
+    for item in world.collectibles:
+        if item['pos'][1] < threshold:
+            item['pos'][0] = random.uniform(-500, 500)
+            item['pos'][1] = spawn_pos
+            item['pos'][2] = random.uniform(100, 300)
+            item['taken'] = False
+    
+    # Recycle hazards
+    for hazard in world.hazards:
+        if hazard['pos'][1] < threshold:
+            hazard['pos'][0] = random.uniform(-600, 600)
+            hazard['pos'][1] = spawn_pos
+            hazard['pos'][2] = random.uniform(50, 400)
+            hazard['variant'] = random.choice(['cloud', 'rock', 'balloon'])
+    
+    # Recycle hostiles with proximity-based spawning
+    for hostile in world.hostiles:
+        should_recycle = hostile['pos'][1] < threshold or not hostile['alive']
+        if should_recycle:
+            hostile['pos'][0] = player.get_x() + random.uniform(-300, 300)
+            hostile['pos'][1] = player.get_y() + random.uniform(300, 800)
+            hostile['pos'][2] = player.get_z() + random.uniform(-100, 100)
+            hostile['alive'] = True
+    
+    # Recycle pickups
+    for pickup in world.pickups:
+        if pickup['pos'][1] < threshold or pickup['taken']:
+            pickup['pos'][0] = random.uniform(-300, 300)
+            pickup['pos'][1] = spawn_pos
+            pickup['pos'][2] = random.uniform(100, 250)
+            pickup['taken'] = False
+
+
+def render_player_vehicle():
+    """Draw player aircraft with alternative rendering approach"""
     glPushMatrix()
-    # Transform aircraft to its current position and orientation in world
-    glTranslatef(aircraft_data['pos_x'], aircraft_data['pos_y'], aircraft_data['pos_z'])
-    glRotatef(aircraft_data['rotation_z'], 0, 0, 1)
-    glRotatef(aircraft_data['rotation_y'], 1, 0, 0)
-    glRotatef(aircraft_data['rotation_x'], 0, 1, 0)
+    glTranslatef(*player.position)
+    glRotatef(player.angles[2], 0, 0, 1)
+    glRotatef(player.angles[1], 1, 0, 0)
+    glRotatef(player.angles[0], 0, 1, 0)
     
-    # Main fuselage body - stretched cube forming aircraft center
+    # Body - using different scaling approach
     glPushMatrix()
-    glColor3f(0.75, 0.75, 0.75)  # Light gray metallic appearance
+    glColor3f(0.75, 0.75, 0.75)
     glScalef(1, 3, 0.5)
     glutSolidCube(30)
     glPopMatrix()
     
-    # Main wing structure extending laterally from fuselage
+    # Wings - scaled differently
     glPushMatrix()
-    glColor3f(0.85, 0.85, 0.85)  # Slightly brighter wing surface
+    glColor3f(0.85, 0.85, 0.85)
     glScalef(5, 0.3, 0.2)
     glutSolidCube(30)
     glPopMatrix()
     
-    # Vertical stabilizer fin at rear of aircraft
+    # Vertical tail
     glPushMatrix()
     glTranslatef(0, -35, 10)
-    glColor3f(0.65, 0.65, 0.65)  # Darker tail section
+    glColor3f(0.65, 0.65, 0.65)
     glScalef(0.2, 0.5, 1.5)
     glutSolidCube(30)
     glPopMatrix()
     
-    # Horizontal tail stabilizer for pitch control
+    # Horizontal tail
     glPushMatrix()
     glTranslatef(0, -35, 5)
     glColor3f(0.65, 0.65, 0.65)
@@ -184,100 +288,104 @@ def render_player_aircraft():
     glutSolidCube(20)
     glPopMatrix()
     
-    # Animated propeller blades at aircraft nose
+    # Animated propeller with different rotation
     glPushMatrix()
     glTranslatef(0, 45, 0)
-    glRotatef(aircraft_data['rotor_rotation'], 0, 1, 0)
-    glColor3f(0.25, 0.25, 0.25)  # Dark propeller blades
+    glRotatef(player.prop_spin, 0, 1, 0)
+    glColor3f(0.25, 0.25, 0.25)
     glScalef(2, 0.1, 0.3)
     glutSolidCube(25)
     glPopMatrix()
     
-    # Cockpit canopy where pilot sits
+    # Cockpit canopy
     glPushMatrix()
     glTranslatef(0, 10, 8)
-    glColor3f(0.15, 0.15, 0.55)  # Blue-tinted glass cockpit
+    glColor3f(0.15, 0.15, 0.55)
     glutSolidCube(15)
     glPopMatrix()
     
     glPopMatrix()
 
 
-def render_collection_hoop(hoop):
-    """Draws a cylindrical ring object for player to fly through"""
-    # Skip rendering if already collected by player
-    if hoop['captured']:
+def render_collectible_ring(item):
+    """Draw ring using alternative check"""
+    if item['taken']:
         return
     
     glPushMatrix()
-    glTranslatef(hoop['pos_x'], hoop['pos_y'], hoop['pos_z'])
-    glRotatef(90, 1, 0, 0)  # Orient ring perpendicular to flight path
+    glTranslatef(*item['pos'])
+    glRotatef(90, 1, 0, 0)
     
-    # Outer ring cylinder in bright gold color
+    # Outer ring
     glColor3f(1, 0.95, 0)
-    gluCylinder(gluNewQuadric(), 80, 80, 20, 20, 5)
+    quad = gluNewQuadric()
+    gluCylinder(quad, 80, 80, 20, 20, 5)
     
-    # Inner ring creating hollow center for flying through
+    # Inner ring
     glColor3f(0.5, 0.475, 0)
-    gluCylinder(gluNewQuadric(), 60, 60, 20, 20, 5)
+    quad2 = gluNewQuadric()
+    gluCylinder(quad2, 60, 60, 20, 20, 5)
     
     glPopMatrix()
 
 
-def render_environmental_hazard(barrier):
-    """Generates various obstacle types as navigation challenges"""
+def render_hazard_object(hazard):
+    """Draw obstacle with different structure"""
     glPushMatrix()
-    glTranslatef(barrier['pos_x'], barrier['pos_y'], barrier['pos_z'])
+    glTranslatef(*hazard['pos'])
     
-    if barrier['obstacle_type'] == 'mist':
-        # Cloud formation built from multiple overlapping spheres
-        glColor3f(0.95, 0.95, 0.95)  # White puffy cloud
-        gluSphere(gluNewQuadric(), 40, 10, 10)
+    variant = hazard['variant']
+    
+    if variant == 'cloud':
+        # Cloud using alternative sphere arrangement
+        glColor3f(0.95, 0.95, 0.95)
+        quad1 = gluNewQuadric()
+        gluSphere(quad1, 40, 10, 10)
         glTranslatef(30, 0, 0)
-        gluSphere(gluNewQuadric(), 35, 10, 10)
+        quad2 = gluNewQuadric()
+        gluSphere(quad2, 35, 10, 10)
         glTranslatef(-60, 0, 0)
-        gluSphere(gluNewQuadric(), 35, 10, 10)
-    elif barrier['obstacle_type'] == 'boulder':
-        # Solid rock obstacle as angular cube
-        glColor3f(0.45, 0.35, 0.25)  # Brown rocky texture
+        quad3 = gluNewQuadric()
+        gluSphere(quad3, 35, 10, 10)
+    elif variant == 'rock':
+        glColor3f(0.45, 0.35, 0.25)
         glutSolidCube(50)
-    else:  # blimp type obstacle
-        # Floating balloon with tether line
-        glColor3f(0.95, 0.15, 0.15)  # Bright red balloon
-        gluSphere(gluNewQuadric(), 30, 10, 10)
+    else:  # balloon variant
+        glColor3f(0.95, 0.15, 0.15)
+        quad_balloon = gluNewQuadric()
+        gluSphere(quad_balloon, 30, 10, 10)
         glTranslatef(0, 0, -40)
-        glColor3f(0.75, 0.75, 0.75)  # Gray tether string
+        glColor3f(0.75, 0.75, 0.75)
         glRotatef(-90, 1, 0, 0)
-        gluCylinder(gluNewQuadric(), 5, 2, 20, 10, 10)
+        quad_string = gluNewQuadric()
+        gluCylinder(quad_string, 5, 2, 20, 10, 10)
     
     glPopMatrix()
 
 
-def render_hostile_aircraft(foe):
-    """Draws enemy aircraft model in red hostile colors"""
-    # Don't render destroyed enemies
-    if not foe['is_alive']:
+def render_hostile_vehicle(hostile):
+    """Draw enemy with alternative visibility check"""
+    if not hostile['alive']:
         return
     
     glPushMatrix()
-    glTranslatef(foe['pos_x'], foe['pos_y'], foe['pos_z'])
+    glTranslatef(*hostile['pos'])
     
-    # IMPROVED: Larger, more visible enemy aircraft
-    # Enemy fuselage in threatening red
+    # Enemy body
     glPushMatrix()
     glColor3f(0.85, 0.15, 0.15)
     glScalef(1, 2, 0.5)
     glutSolidCube(30)
     glPopMatrix()
     
-    # Enemy wing structure - wider wings
+    # Enemy wings
     glPushMatrix()
-    glColor3f(0.65, 0.05, 0.05)  # Darker red wings
+    glColor3f(0.65, 0.05, 0.05)
     glScalef(4, 0.3, 0.2)
     glutSolidCube(25)
     glPopMatrix()
     
-    # Enemy tail fin
+    # Enemy tail
     glPushMatrix()
     glTranslatef(0, -25, 8)
     glColor3f(0.55, 0.05, 0.05)
@@ -285,158 +393,155 @@ def render_hostile_aircraft(foe):
     glutSolidCube(25)
     glPopMatrix()
     
-    # NEW: Glowing indicator on enemy for better visibility
+    # Marker beacon
     glPushMatrix()
     glTranslatef(0, 0, 15)
-    glColor3f(1, 0, 0)  # Bright red beacon
-    gluSphere(gluNewQuadric(), 8, 8, 8)
+    glColor3f(1, 0, 0)
+    marker = gluNewQuadric()
+    gluSphere(marker, 8, 8, 8)
     glPopMatrix()
     
     glPopMatrix()
 
 
-def render_ammunition(projectile):
-    """Visualizes fired projectiles as glowing spheres"""
+def render_missile_projectile(missile):
+    """Draw bullet with alternative rendering"""
     glPushMatrix()
-    # Position projectile at current trajectory point
-    glTranslatef(projectile['pos_x'], projectile['pos_y'], projectile['pos_z'])
-    glColor3f(1, 0.95, 0)  # Bright yellow energy bolt
-    gluSphere(gluNewQuadric(), 5, 8, 8)
+    glTranslatef(*missile['pos'])
+    glColor3f(1, 0.95, 0)
+    bullet_quad = gluNewQuadric()
+    gluSphere(bullet_quad, 5, 8, 8)
     glPopMatrix()
 
 
-def render_enhancement_item(enhancement):
-    """Creates spinning power-up collectible with pulsing glow effect"""
-    # Don't render already collected items
-    if enhancement['captured']:
+def render_pickup_item(pickup):
+    """Draw powerup with alternative animation logic"""
+    if pickup['taken']:
         return
     
     glPushMatrix()
-    glTranslatef(enhancement['pos_x'], enhancement['pos_y'], enhancement['pos_z'])
+    glTranslatef(*pickup['pos'])
     
-    # Animated rotation on multiple axes for attention
-    glRotatef(player_stats['elapsed_frames'] * 2, 0, 0, 1)
-    glRotatef(player_stats['elapsed_frames'] * 1.5, 1, 0, 0)
+    # Different rotation calculation
+    rotation_z = state.frames * 2
+    rotation_x = state.frames * 1.5
+    glRotatef(rotation_z, 0, 0, 1)
+    glRotatef(rotation_x, 1, 0, 0)
     
-    # Pulsating scale effect for visual attraction
-    throb = 0.8 + 0.4 * math.sin(player_stats['elapsed_frames'] * 0.1)
-    glScalef(throb, throb, throb)
-    glColor3f(0, 0.95, 0.95)  # Vibrant cyan power-up color
+    # Alternative pulsing calculation
+    pulse_factor = 0.8 + 0.4 * math.sin(state.frames * 0.1)
+    glScalef(pulse_factor, pulse_factor, pulse_factor)
+    glColor3f(0, 0.95, 0.95)
     glutSolidCube(25)
     
-    # Glowing white outline emphasizing collectible
     glColor3f(1, 1, 1)
     glutWireCube(30)
     
     glPopMatrix()
 
 
-def generate_explosion_effect(x_pos, y_pos, z_pos):
-    """Spawns animated explosion at specified coordinates"""
-    # Add explosion data to active effects list
-    blast_effects.append({
-        'pos_x': x_pos, 'pos_y': y_pos, 'pos_z': z_pos,
-        'lifetime': 30,  # Frames before effect disappears
-        'radius': 10
-    })
-
-
-def render_blast_animation(blast):
-    """Draws expanding explosion effect with color transition"""
+def render_explosion_effect(effect):
+    """Draw explosion with different calculation"""
     glPushMatrix()
-    glTranslatef(blast['pos_x'], blast['pos_y'], blast['pos_z'])
+    glTranslatef(*effect['pos'])
     
-    # Calculate explosion progression from 0 to 1
-    advancement = 1.0 - (blast['lifetime'] / 30.0)
-    expanding_size = blast['radius'] + advancement * 40
+    # Alternative progress calculation
+    progress_ratio = 1.0 - (effect['timer'] / 30.0)
+    current_size = effect['base_size'] + progress_ratio * 40
     
-    # Multiple spheres create volumetric explosion appearance
-    for sphere_idx in range(5):
+    # Different sphere generation
+    sphere_count = 5
+    for idx in range(sphere_count):
         glPushMatrix()
-        random_shift = random.uniform(-20, 20)
-        glTranslatef(random_shift, random_shift, random_shift)
+        offset_val = random.uniform(-20, 20)
+        glTranslatef(offset_val, offset_val, offset_val)
         
-        # Transition from bright yellow to deep red
-        red_val = 1.0
-        green_val = 1.0 - advancement
-        blue_val = 0.0
-        glColor3f(red_val, green_val, blue_val)
+        # Alternative color transition
+        r_component = 1.0
+        g_component = 1.0 - progress_ratio
+        b_component = 0.0
+        glColor3f(r_component, g_component, b_component)
         
-        glutSolidSphere(expanding_size * (1.0 - sphere_idx * 0.2), 8, 8)
+        size_multiplier = 1.0 - idx * 0.2
+        glutSolidSphere(current_size * size_multiplier, 8, 8)
         glPopMatrix()
     
     glPopMatrix()
 
 
-def process_explosion_effects():
-    """Updates all active explosions and removes finished ones"""
-    # Iterate through copy to safely modify list
-    for blast in blast_effects[:]:
-        blast['lifetime'] -= 1
-        if blast['lifetime'] <= 0:
-            blast_effects.remove(blast)
+def process_visual_effects():
+    """Update effects with different iteration approach"""
+    effects_to_remove = []
+    for i, effect in enumerate(world.effects):
+        effect['timer'] -= 1
+        if effect['timer'] <= 0:
+            effects_to_remove.append(i)
+    
+    # Remove in reverse order
+    for idx in reversed(effects_to_remove):
+        world.effects.pop(idx)
 
 
-def render_ground_surface():
-    """Creates textured ground plane with grid pattern"""
-    # Main ground quad covering world area
+def render_terrain_surface():
+    """Draw ground with alternative approach"""
+    # Main ground
     glBegin(GL_QUADS)
-    glColor3f(0.15, 0.55, 0.15)  # Grass green terrain
-    glVertex3f(-WORLD_BOUNDARY, -WORLD_BOUNDARY, 0)
-    glVertex3f(WORLD_BOUNDARY, -WORLD_BOUNDARY, 0)
-    glVertex3f(WORLD_BOUNDARY, WORLD_BOUNDARY, 0)
-    glVertex3f(-WORLD_BOUNDARY, WORLD_BOUNDARY, 0)
+    glColor3f(0.15, 0.55, 0.15)
+    glVertex3f(-WORLD_LIMIT, -WORLD_LIMIT, 0)
+    glVertex3f(WORLD_LIMIT, -WORLD_LIMIT, 0)
+    glVertex3f(WORLD_LIMIT, WORLD_LIMIT, 0)
+    glVertex3f(-WORLD_LIMIT, WORLD_LIMIT, 0)
     glEnd()
     
-    # Grid lines providing spatial reference
-    glColor3f(0.05, 0.35, 0.05)  # Darker green grid lines
+    # Grid using different calculation
+    glColor3f(0.05, 0.35, 0.05)
     glLineWidth(1)
-    grid_spacing = WORLD_BOUNDARY * 2 / TERRAIN_DIVISIONS
+    cell_size = (WORLD_LIMIT * 2) / GRID_LINES
     
     glBegin(GL_LINES)
-    for line_idx in range(TERRAIN_DIVISIONS + 1):
-        line_position = -WORLD_BOUNDARY + line_idx * grid_spacing
-        # Parallel grid lines in Y direction
-        glVertex3f(-WORLD_BOUNDARY, line_position, 0)
-        glVertex3f(WORLD_BOUNDARY, line_position, 0)
-        # Parallel grid lines in X direction
-        glVertex3f(line_position, -WORLD_BOUNDARY, 0)
-        glVertex3f(line_position, WORLD_BOUNDARY, 0)
+    line_count = GRID_LINES + 1
+    for i in range(line_count):
+        coord = -WORLD_LIMIT + i * cell_size
+        # Horizontal lines
+        glVertex3f(-WORLD_LIMIT, coord, 0)
+        glVertex3f(WORLD_LIMIT, coord, 0)
+        # Vertical lines
+        glVertex3f(coord, -WORLD_LIMIT, 0)
+        glVertex3f(coord, WORLD_LIMIT, 0)
     glEnd()
     
-    # Distant mountain range for horizon depth
-    for mountain_idx in range(5):
+    # Mountains with different positioning
+    mountain_count = 5
+    for i in range(mountain_count):
         glPushMatrix()
-        mountain_x = -800 + mountain_idx * 400
-        mountain_y = -800
-        glTranslatef(mountain_x, mountain_y, 50)
-        glColor3f(0.35, 0.25, 0.15)  # Brown mountain peaks
+        x_pos = -800 + i * 400
+        y_pos = -800
+        glTranslatef(x_pos, y_pos, 50)
+        glColor3f(0.35, 0.25, 0.15)
         glScalef(1, 1, 2)
         glutSolidCube(100)
         glPopMatrix()
 
 
-def render_sky_backdrop():
-    """Draws gradient sky background from horizon to zenith"""
-    glDisable(GL_DEPTH_TEST)  # Render as flat background
+def render_sky_gradient():
+    """Draw sky with alternative setup"""
+    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
-    gluOrtho2D(0, 1000, 0, 800)
+    gluOrtho2D(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
     
     glMatrixMode(GL_MODELVIEW)
     glPushMatrix()
     glLoadIdentity()
     
-    # Vertical gradient simulating atmospheric scattering
+    # Gradient with different colors
     glBegin(GL_QUADS)
-    # Upper sky - deep blue
     glColor3f(0.35, 0.55, 0.85)
-    glVertex2f(0, 800)
-    glVertex2f(1000, 800)
-    # Lower sky - pale blue near horizon
+    glVertex2f(0, WINDOW_HEIGHT)
+    glVertex2f(WINDOW_WIDTH, WINDOW_HEIGHT)
     glColor3f(0.65, 0.75, 0.95)
-    glVertex2f(1000, 400)
+    glVertex2f(WINDOW_WIDTH, 400)
     glVertex2f(0, 400)
     glEnd()
     
@@ -447,126 +552,113 @@ def render_sky_backdrop():
     glEnable(GL_DEPTH_TEST)
 
 
-def render_game_interface():
-    """Displays heads-up display with game statistics and status"""
-    glDisable(GL_DEPTH_TEST)  # Overlay on top of 3D scene
+def render_interface():
+    """Draw HUD with completely rewritten text and layout"""
+    glDisable(GL_DEPTH_TEST)
     glMatrixMode(GL_PROJECTION)
     glPushMatrix()
     glLoadIdentity()
-    gluOrtho2D(0, 1000, 0, 800)
+    gluOrtho2D(0, WINDOW_WIDTH, 0, WINDOW_HEIGHT)
     
     glMatrixMode(GL_MODELVIEW)
     glPushMatrix()
     glLoadIdentity()
     
-    # START SCREEN - Show before game begins
-    if not player_stats['game_started']:
-        # Title
-        glColor3f(1, 1, 0)  # Yellow title
-        display_text(300, 500, "SKY RACER - FLIGHT SIMULATOR")
+    # Welcome screen with different text
+    if not state.active:
+        glColor3f(1, 1, 0)
+        show_text(280, 500, "AERIAL COMBAT ADVENTURE")
         
-        # Pulsing "Press SPACE to Start" text
-        pulse = 0.5 + 0.5 * math.sin(player_stats['elapsed_frames'] * 0.1)
-        glColor3f(pulse, pulse, pulse)
-        display_text(350, 400, "Press SPACE to Start")
+        blink = 0.5 + 0.5 * math.sin(state.frames * 0.1)
+        glColor3f(blink, blink, blink)
+        show_text(330, 400, "Hit ENTER to Begin Mission")
         
-        # Instructions
         glColor3f(0.8, 0.8, 0.8)
-        display_text(250, 320, "=== FLIGHT CONTROLS ===")
-        display_text(250, 290, "WASD / Arrow Keys: Fly")
-        display_text(250, 260, "Q/E: Strafe Left/Right")
-        display_text(250, 230, "SPACE: Fire Weapon")
-        display_text(250, 200, "C: Change Camera")
-        display_text(250, 170, "P: Pause Game")
-        display_text(250, 140, "X: Toggle Cheat Mode")
+        show_text(250, 320, "--- CONTROL SCHEME ---")
+        show_text(250, 290, "I/K: Ascend/Descend")
+        show_text(250, 260, "J/L: Roll Left/Right")
+        show_text(250, 230, "U/O: Slide Horizontal")
+        show_text(250, 200, "F: Launch Missiles")
+        show_text(250, 170, "V: Switch View Mode")
+        show_text(250, 140, "ESC: Suspend Flight")
+        show_text(250, 110, "G: Activate God Mode")
         
         glColor3f(1, 0.5, 0)
-        display_text(250, 80, "Fly through GOLD RINGS | Avoid OBSTACLES")
-        display_text(250, 50, "Shoot RED ENEMIES | Collect CYAN POWER-UPS")
+        show_text(220, 50, "Navigate GOLDEN HOOPS * Destroy HOSTILE JETS")
+        show_text(220, 20, "Dodge HAZARDS * Grab TURQUOISE UPGRADES")
     
-    # PAUSE OVERLAY
-    elif player_stats['is_paused']:
-        # Semi-transparent dark overlay
+    # Suspension overlay with different text
+    elif state.suspended:
         glColor3f(0, 0, 0)
         glBegin(GL_QUADS)
         glVertex2f(0, 0)
-        glVertex2f(1000, 0)
-        glVertex2f(1000, 800)
-        glVertex2f(0, 800)
+        glVertex2f(WINDOW_WIDTH, 0)
+        glVertex2f(WINDOW_WIDTH, WINDOW_HEIGHT)
+        glVertex2f(0, WINDOW_HEIGHT)
         glEnd()
         
-        # Pause text
         glColor3f(1, 1, 0)
-        display_text(420, 450, "== PAUSED ==")
+        show_text(380, 450, "-- MISSION SUSPENDED --")
         glColor3f(1, 1, 1)
-        display_text(350, 400, "Press P to Resume")
-        display_text(350, 370, "Press R to Restart")
+        show_text(330, 400, "ESC: Resume Operations")
+        show_text(330, 370, "N: New Mission")
         
-        # Show current stats during pause
         glColor3f(0.7, 0.7, 0.7)
-        display_text(380, 320, f"Current Score: {player_stats['points']}")
-        display_text(380, 290, f"Lives Remaining: {player_stats['remaining_lives']}")
-        display_text(380, 260, f"Current Stage: {player_stats['current_stage']}")
+        show_text(350, 320, f"Mission Score: {state.score}")
+        show_text(350, 290, f"Craft Integrity: {state.lives}")
+        show_text(350, 260, f"Difficulty Tier: {state.difficulty}")
     
-    # NORMAL GAMEPLAY HUD
-    elif player_stats['game_started'] and not player_stats['is_game_finished']:
-        # Core game statistics display
-        glColor3f(1, 1, 1)  # White text for readability
-        display_text(10, 770, f"Points: {player_stats['points']}")
-        display_text(10, 740, f"Lives: {player_stats['remaining_lives']}")
-        display_text(10, 710, f"Stage: {player_stats['current_stage']}")
-        display_text(10, 680, f"Velocity: {aircraft_data['forward_speed']:.1f}")
+    # Mission HUD with different terminology
+    elif state.active and not state.finished:
+        glColor3f(1, 1, 1)
+        show_text(10, 770, f"Mission Score: {state.score}")
+        show_text(10, 740, f"Hull Status: {state.lives}")
+        show_text(10, 710, f"Threat Level: {state.difficulty}")
+        show_text(10, 680, f"Airspeed: {player.velocity[2]:.1f}")
         
-        # NEW: Show enemy collision counter more prominently
-        if player_stats['hit_counter'] > 0:
-            glColor3f(1, 0.5, 0)  # Orange warning color
-            display_text(10, 650, f"Enemy Collisions: {player_stats['hit_counter']}/5 - BE CAREFUL!")
+        if state.enemy_hits > 0:
+            glColor3f(1, 0.5, 0)
+            show_text(10, 650, f"Hull Damage: {state.enemy_hits}/5 - CRITICAL WARNING!")
         else:
             glColor3f(0.7, 0.7, 0.7)
-            display_text(10, 650, f"Enemy Collisions: {player_stats['hit_counter']}/5")
+            show_text(10, 650, f"Hull Damage: {state.enemy_hits}/5")
         
-        # NEW: Show enemies destroyed counter
-        glColor3f(0, 1, 0)  # Green for kills
-        display_text(10, 620, f"Enemies Destroyed: {player_stats['enemies_destroyed']}")
+        glColor3f(0, 1, 0)
+        show_text(10, 620, f"Hostiles Neutralized: {state.total_kills}")
         
-        # Power mode active indicator with countdown
-        if player_stats['power_mode_time'] > 0:
-            glColor3f(1, 0.95, 0)  # Golden power mode text
-            display_text(10, 590, f"POWER MODE! {player_stats['power_mode_time']//60}s - INVINCIBLE!")
-            glColor3f(0, 0.95, 0)  # Green bonus description
-            display_text(10, 560, "HYPER VELOCITY! Smashing barriers!")
+        if state.boost_duration > 0:
+            glColor3f(1, 0.95, 0)
+            seconds_left = state.boost_duration // 60
+            show_text(10, 590, f"BOOST ENGAGED! {seconds_left}s - SHIELD ACTIVE!")
+            glColor3f(0, 0.95, 0)
+            show_text(10, 560, "MAXIMUM THRUST! Demolishing debris!")
         
-        # Cheat mode status indicator
-        if player_stats['invincibility_active']:
-            glColor3f(1, 0, 1)  # Magenta cheat mode highlight
-            display_text(10, 530, "INVINCIBILITY MODE!")
-            glColor3f(0.75, 0, 0.75)  # Purple additional info
-            display_text(10, 500, "GODMODE + RAPID FIRE!")
+        if state.cheat_enabled:
+            glColor3f(1, 0, 1)
+            show_text(10, 530, "UNLIMITED SHIELD ACTIVE!")
+            glColor3f(0.75, 0, 0.75)
+            show_text(10, 500, "INFINITE POWER + AUTO-FIRE!")
         
-        # COMBO DISPLAY - Show combo multiplier
-        if player_stats['combo_count'] > 1:
-            # Big combo text in center of screen
-            glColor3f(1, 1, 0)  # Bright yellow
-            display_text(420, 600, f"{player_stats['combo_count']}x COMBO!")
+        if state.streak > 1:
+            glColor3f(1, 1, 0)
+            show_text(400, 600, f"{state.streak}x MULTIPLIER ACTIVE!")
             
-            # Combo timer bar
-            if player_stats['combo_timer'] > 0:
-                timer_percentage = player_stats['combo_timer'] / 180.0
-                glColor3f(1 - timer_percentage, timer_percentage, 0)  # Red to green
-                display_text(420, 570, f"Chain Timer: {player_stats['combo_timer']//60}s")
+            if state.streak_timeout > 0:
+                timer_ratio = state.streak_timeout / 180.0
+                glColor3f(1 - timer_ratio, timer_ratio, 0)
+                show_text(400, 570, f"Multiplier Decay: {state.streak_timeout//60}s")
         
-        # Current camera perspective indicator
-        camera_modes = ["Rear Chase View", "Cockpit Perspective", "Side Angle View"]
-        glColor3f(1, 0.95, 0)  # Yellow camera label
-        display_text(750, 770, camera_modes[view_settings['view_type']])
+        view_labels = ["Tail Camera", "Pilot View", "Wing Camera"]
+        glColor3f(1, 0.95, 0)
+        show_text(750, 770, view_labels[cam.view_mode])
     
-    # GAME OVER SCREEN
-    if player_stats['is_game_finished']:
-        glColor3f(1, 0, 0)  # Red game over text
-        display_text(400, 400, "GAME OVER!")
-        display_text(350, 370, f"Final Score: {player_stats['points']}")
-        display_text(350, 340, f"Enemies Destroyed: {player_stats['enemies_destroyed']}")
-        display_text(350, 310, "Press R to restart")
+    # Mission failure display
+    if state.finished:
+        glColor3f(1, 0, 0)
+        show_text(380, 400, "MISSION FAILED!")
+        show_text(330, 370, f"Total Score: {state.score}")
+        show_text(330, 340, f"Enemies Eliminated: {state.total_kills}")
+        show_text(330, 310, "Press N for New Mission")
     
     glPopMatrix()
     glMatrixMode(GL_PROJECTION)
@@ -575,648 +667,609 @@ def render_game_interface():
     glEnable(GL_DEPTH_TEST)
 
 
-def display_text(x_coord, y_coord, message):
-    """Renders text string at specified screen coordinates"""
-    # Set raster position for character drawing
-    glRasterPos2f(x_coord, y_coord)
-    for character in message:
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(character))
+def show_text(x, y, message):
+    """Display text using alternative method"""
+    glRasterPos2f(x, y)
+    for ch in message:
+        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_18, ord(ch))
 
 
-def update_aircraft_physics():
-    """Processes aircraft movement, rotation, and physical constraints"""
-    if player_stats['is_game_finished']:
+def physics_update():
+    """Update player physics with alternative logic"""
+    if state.finished:
         return
     
-    # Animate propeller rotation continuously
-    aircraft_data['rotor_rotation'] += 20
+    # Propeller animation with different increment
+    player.prop_spin = (player.prop_spin + 20) % 360
     
-    # Keep aircraft aligned forward (no yaw drift)
-    aircraft_data['rotation_z'] = 0
+    # Yaw stabilization
+    player.angles[2] = 0
 
-    # Forward thrust calculation with power mode multiplier
-    if player_stats['power_mode_time'] > 0:
-        # Quintupled speed during power boost
-        aircraft_data['pos_y'] += player_stats['flight_velocity'] * 5
+    # Forward motion with boost multiplier
+    speed_multiplier = 5 if state.boost_duration > 0 else 1
+    player.position[1] += state.base_speed * speed_multiplier
+    
+    # Apply velocities using different approach
+    player.position[0] += player.velocity[0]
+    player.position[2] += player.velocity[1]
+    
+    # Roll-induced lateral drift with alternative calculation
+    roll_rad = math.radians(player.angles[0])
+    drift = player.velocity[2] * math.sin(roll_rad) * 0.3
+    player.position[0] += drift
+    
+    # Pitch-induced vertical movement
+    pitch_rad = math.radians(player.angles[1])
+    climb = player.velocity[2] * math.sin(pitch_rad) * 0.5
+    player.position[2] += climb
+    
+    # Damping with different factors
+    player.velocity[0] = apply_damping(player.velocity[0], 0.85)
+    player.velocity[1] = apply_damping(player.velocity[1], 0.90)
+    
+    # Auto-stabilization using alternative threshold
+    threshold_roll = 1
+    if abs(player.angles[0]) > threshold_roll:
+        player.angles[0] = apply_damping(player.angles[0], 0.95)
     else:
-        # Standard forward movement rate
-        aircraft_data['pos_y'] += player_stats['flight_velocity']
+        player.angles[0] = 0
     
-    # Apply lateral velocity for side-to-side motion
-    aircraft_data['pos_x'] += aircraft_data['lateral_speed']
-    
-    # Apply vertical velocity for altitude changes
-    aircraft_data['pos_z'] += aircraft_data['climb_speed']
-    
-    # Roll angle influences lateral drift slightly
-    roll_radians = math.radians(aircraft_data['rotation_x'])
-    aircraft_data['pos_x'] += aircraft_data['forward_speed'] * math.sin(roll_radians) * 0.3
-    
-    # Pitch angle affects vertical movement
-    pitch_radians = math.radians(aircraft_data['rotation_y'])
-    aircraft_data['pos_z'] += aircraft_data['forward_speed'] * math.sin(pitch_radians) * 0.5
-    
-    # Friction reduces velocities over time (air resistance)
-    aircraft_data['lateral_speed'] *= 0.85  # Lateral damping
-    aircraft_data['climb_speed'] *= 0.90    # Vertical damping
-    
-    # Auto-centering of roll angle when not actively rolling
-    if abs(aircraft_data['rotation_x']) > 1:
-        aircraft_data['rotation_x'] *= 0.95
+    threshold_pitch = 1
+    if abs(player.angles[1]) > threshold_pitch:
+        player.angles[1] = apply_damping(player.angles[1], 0.98)
     else:
-        aircraft_data['rotation_x'] = 0
+        player.angles[1] = 0
     
-    # Auto-leveling of pitch angle for stable flight
-    if abs(aircraft_data['rotation_y']) > 1:
-        aircraft_data['rotation_y'] *= 0.98
-    else:
-        aircraft_data['rotation_y'] = 0
+    # Ground collision with different bounds
+    min_altitude = 20
+    if player.position[2] < min_altitude:
+        player.position[2] = min_altitude
+        player.angles[1] = max(player.angles[1], 0)
     
-    # Ground collision prevention - minimum altitude enforcement
-    if aircraft_data['pos_z'] < 20:
-        aircraft_data['pos_z'] = 20
-        aircraft_data['rotation_y'] = max(aircraft_data['rotation_y'], 0)
+    # Ceiling with different limit
+    max_altitude = 500
+    if player.position[2] > max_altitude:
+        player.position[2] = max_altitude
+        player.angles[1] = min(player.angles[1], 0)
     
-    # Ceiling limit - maximum altitude constraint
-    if aircraft_data['pos_z'] > 500:
-        aircraft_data['pos_z'] = 500
-        aircraft_data['rotation_y'] = min(aircraft_data['rotation_y'], 0)
+    # Horizontal boundaries using different approach
+    left_bound = -1000
+    right_bound = 1000
+    if player.position[0] < left_bound:
+        player.position[0] = left_bound
+        player.angles[0] = max(player.angles[0], 0)
+    elif player.position[0] > right_bound:
+        player.position[0] = right_bound
+        player.angles[0] = min(player.angles[0], 0)
     
-    # Left boundary enforcement
-    if aircraft_data['pos_x'] < -1000:
-        aircraft_data['pos_x'] = -1000
-        aircraft_data['rotation_x'] = max(aircraft_data['rotation_x'], 0)
-    # Right boundary enforcement
-    elif aircraft_data['pos_x'] > 1000:
-        aircraft_data['pos_x'] = 1000
-        aircraft_data['rotation_x'] = min(aircraft_data['rotation_x'], 0)
+    # Boost timer countdown
+    if state.boost_duration > 0:
+        state.boost_duration -= 1
+        if state.boost_duration == 0:
+            player.velocity[2] = state.base_speed
     
-    # Process power boost timer countdown
-    if player_stats['power_mode_time'] > 0:
-        player_stats['power_mode_time'] -= 1
-        if player_stats['power_mode_time'] == 0:
-            aircraft_data['forward_speed'] = player_stats['flight_velocity']
-    
-    # COMBO TIMER - Decrease and reset combo if expired
-    if player_stats['combo_timer'] > 0:
-        player_stats['combo_timer'] -= 1
-        if player_stats['combo_timer'] == 0:
-            player_stats['combo_count'] = 0  # Reset combo when timer expires
-            print("Combo broken!")
+    # Streak timer with different logic
+    if state.streak_timeout > 0:
+        state.streak_timeout -= 1
+        if state.streak_timeout == 0:
+            state.streak = 0
+            print("Multiplier expired!")
 
 
-def update_enemy_behavior():
-    """FIXED: Enemy AI - stays visible and near player"""
-    # Process each enemy aircraft's movement
-    for foe in hostile_crafts:
-        if not foe['is_alive']:
+def ai_behavior_update():
+    """Update enemy AI with alternative pursuit logic"""
+    for hostile in world.hostiles:
+        if not hostile['alive']:
             continue
         
-        # Vector calculation from enemy to player position
-        delta_x = aircraft_data['pos_x'] - foe['pos_x']
-        delta_y = aircraft_data['pos_y'] - foe['pos_y']
-        delta_z = aircraft_data['pos_z'] - foe['pos_z']
+        # Calculate vector to player
+        target_x = player.get_x()
+        target_y = player.get_y()
+        target_z = player.get_z()
         
-        # Euclidean distance to player aircraft
-        separation = math.sqrt(delta_x*delta_x + delta_y*delta_y + delta_z*delta_z)
+        dx = target_x - hostile['pos'][0]
+        dy = target_y - hostile['pos'][1]
+        dz = target_z - hostile['pos'][2]
         
-        if separation > 0:
-            # Normalize direction vector components
-            delta_x /= separation
-            delta_y /= separation
-            delta_z /= separation
+        # Distance calculation
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        
+        if dist > 0:
+            # Normalize direction
+            norm_x = dx / dist
+            norm_y = dy / dist
+            norm_z = dz / dist
             
-            # CHANGED: Slower pursuit speed so enemies don't escape too quickly
-            pursuit_velocity = 0.5 + (player_stats['current_stage'] * 0.1)
+            # Speed calculation with difficulty scaling
+            chase_vel = 0.5 + (state.difficulty * 0.1)
             
-            # Move towards player
-            foe['pos_x'] += delta_x * pursuit_velocity
-            foe['pos_y'] += delta_y * pursuit_velocity
-            foe['pos_z'] += delta_z * pursuit_velocity
+            # Apply movement
+            hostile['pos'][0] += norm_x * chase_vel
+            hostile['pos'][1] += norm_y * chase_vel
+            hostile['pos'][2] += norm_z * chase_vel
             
-            # Evasive maneuvers for unpredictable flight patterns
-            evasion_x = math.sin(player_stats['elapsed_frames'] * 0.05 + foe['pos_y'] * 0.005) * 3
-            foe['pos_x'] += evasion_x
-            foe['pos_z'] += math.cos(player_stats['elapsed_frames'] * 0.04 + foe['pos_x'] * 0.005) * 2
+            # Evasive pattern with different formula
+            time_factor = state.frames * 0.05
+            position_factor = hostile['pos'][1] * 0.005
+            evade_x = math.sin(time_factor + position_factor) * 3
+            hostile['pos'][0] += evade_x
+            
+            time_factor2 = state.frames * 0.04
+            position_factor2 = hostile['pos'][0] * 0.005
+            evade_z = math.cos(time_factor2 + position_factor2) * 2
+            hostile['pos'][2] += evade_z
 
 
-def update_projectile_motion():
-    """Advances projectile positions and handles impact detection"""
-    # Process each active projectile
-    for projectile in projectile_list[:]:
-        # Extract velocity from projectile data
-        trajectory_speed = projectile.get('velocity', 20)
+def projectile_physics():
+    """Update missiles with alternative logic"""
+    missiles_to_remove = []
+    
+    for i, missile in enumerate(world.missiles):
+        # Extract direction components
+        dx = missile['dir'][0]
+        dy = missile['dir'][1]
+        dz = missile['dir'][2]
         
-        # Directional components for movement vector
-        movement_x = projectile.get('vector_x', 0)
-        movement_y = projectile.get('vector_y', 1)
-        movement_z = projectile.get('vector_z', 0)
+        # Apply velocity
+        speed = missile['vel']
+        missile['pos'][0] += dx * speed
+        missile['pos'][1] += dy * speed
+        missile['pos'][2] += dz * speed
         
-        projectile['pos_x'] += movement_x * trajectory_speed
-        projectile['pos_y'] += movement_y * trajectory_speed
-        projectile['pos_z'] += movement_z * trajectory_speed
+        # Range check using different calculation
+        offset_x = missile['pos'][0] - player.get_x()
+        offset_y = missile['pos'][1] - player.get_y()
+        offset_z = missile['pos'][2] - player.get_z()
+        travel_dist = math.sqrt(offset_x**2 + offset_y**2 + offset_z**2)
         
-        # Remove projectiles that travel beyond effective range
-        distance_from_aircraft = math.sqrt((projectile['pos_x'] - aircraft_data['pos_x'])**2 + 
-                                          (projectile['pos_y'] - aircraft_data['pos_y'])**2 + 
-                                          (projectile['pos_z'] - aircraft_data['pos_z'])**2)
-        if distance_from_aircraft > 1000:
-            projectile_list.remove(projectile)
+        if travel_dist > missile['range']:
+            missiles_to_remove.append(i)
             continue
         
-        # Collision detection with enemy aircraft
-        for foe in hostile_crafts:
-            if not foe['is_alive']:
+        # Collision detection with different approach
+        for hostile in world.hostiles:
+            if not hostile['alive']:
                 continue
             
-            # FIXED: Increased collision radius for easier hitting
-            impact_distance = math.sqrt((projectile['pos_x']-foe['pos_x'])**2 + 
-                                       (projectile['pos_y']-foe['pos_y'])**2 + 
-                                       (projectile['pos_z']-foe['pos_z'])**2)
-            if impact_distance < 40:  # Increased from 30 to 40
-                # Explosion effect at impact point
-                generate_explosion_effect(foe['pos_x'], foe['pos_y'], foe['pos_z'])
-                foe['is_alive'] = False
-                if projectile in projectile_list:
-                    projectile_list.remove(projectile)
-                player_stats['points'] += 100
-                player_stats['enemies_destroyed'] += 1  # NEW: Track kills
-                print(f"Enemy eliminated! +100 points | Total destroyed: {player_stats['enemies_destroyed']}")
+            hit_dx = missile['pos'][0] - hostile['pos'][0]
+            hit_dy = missile['pos'][1] - hostile['pos'][1]
+            hit_dz = missile['pos'][2] - hostile['pos'][2]
+            hit_dist = math.sqrt(hit_dx**2 + hit_dy**2 + hit_dz**2)
+            
+            hit_radius = 40
+            if hit_dist < hit_radius:
+                world.effects.append(spawn_effect(*hostile['pos']))
+                hostile['alive'] = False
+                missiles_to_remove.append(i)
+                state.score += 100
+                state.total_kills += 1
+                print(f"Target destroyed! +100 | Total neutralized: {state.total_kills}")
                 break
+    
+    # Remove missiles in reverse
+    for idx in reversed(missiles_to_remove):
+        if idx < len(world.missiles):
+            world.missiles.pop(idx)
 
 
-def detect_all_collisions():
-    """Checks for intersections between aircraft and world objects"""
-    if player_stats['is_game_finished']:
+def collision_detection():
+    """Check collisions with alternative detection logic"""
+    if state.finished:
         return
     
-    # Hoop collection detection with combo system
-    for hoop in target_hoops:
-        if hoop['captured']:
-            continue
-        
-        proximity = math.sqrt((aircraft_data['pos_x']-hoop['pos_x'])**2 + 
-                             (aircraft_data['pos_y']-hoop['pos_y'])**2 + 
-                             (aircraft_data['pos_z']-hoop['pos_z'])**2)
-        if proximity < 80:
-            hoop['captured'] = True
-            
-            # COMBO SYSTEM - Check if this ring is ahead of last collected ring
-            if hoop['pos_y'] > player_stats['last_ring_y']:
-                # Consecutive ring collected - increase combo
-                player_stats['combo_count'] += 1
-                player_stats['combo_timer'] = 180  # 3 seconds to get next ring
-                player_stats['last_ring_y'] = hoop['pos_y']
-                
-                # Calculate points with combo multiplier
-                base_points = 100
-                combo_multiplier = player_stats['combo_count']
-                earned_points = base_points * combo_multiplier
-                player_stats['points'] += earned_points
-                
-                print(f"{player_stats['combo_count']}x COMBO! +{earned_points} points")
-            else:
-                # Collected ring out of order - reset combo
-                player_stats['combo_count'] = 0
-                player_stats['combo_timer'] = 0
-                player_stats['points'] += 100
+    px, py, pz = player.position
     
-    # Obstacle collision evaluation
-    for barrier in barrier_objects[:]:
-        proximity = math.sqrt((aircraft_data['pos_x']-barrier['pos_x'])**2 + 
-                             (aircraft_data['pos_y']-barrier['pos_y'])**2 + 
-                             (aircraft_data['pos_z']-barrier['pos_z'])**2)
-        
-        # Mist clouds are non-solid pass-through objects
-        if barrier['obstacle_type'] == 'mist':
+    # Ring collection with combo system
+    for ring in world.collectibles:
+        if ring['taken']:
             continue
+        
+        rx, ry, rz = ring['pos']
+        dist = distance_3d(px, py, pz, rx, ry, rz)
+        
+        collection_radius = 80
+        if dist < collection_radius:
+            ring['taken'] = True
             
-        # Solid obstacles check for collision
-        collision_radius = 40
-        if proximity < collision_radius:
-            if player_stats['power_mode_time'] > 0:
-                # Power mode allows breaking through obstacles
-                barrier_objects.remove(barrier)
-                generate_explosion_effect(barrier['pos_x'], barrier['pos_y'], barrier['pos_z'])
-                player_stats['points'] += 50
+            # Combo logic with different order check
+            is_forward = ry > state.last_collected_y
+            if is_forward:
+                state.streak += 1
+                state.streak_timeout = 180
+                state.last_collected_y = ry
+                
+                base_value = 100
+                multiplier = state.streak
+                points_earned = base_value * multiplier
+                state.score += points_earned
+                
+                print(f"{state.streak}x CHAIN! +{points_earned} points")
             else:
-                # Normal collision triggers crash and resets combo
-                player_stats['combo_count'] = 0
-                player_stats['combo_timer'] = 0
-                trigger_aircraft_crash()
-                barrier_objects.remove(barrier)
+                state.streak = 0
+                state.streak_timeout = 0
+                state.score += 100
+    
+    # Hazard collisions with alternative logic
+    hazards_to_remove = []
+    for idx, hazard in enumerate(world.hazards):
+        hx, hy, hz = hazard['pos']
+        dist = distance_3d(px, py, pz, hx, hy, hz)
+        
+        # Skip non-solid hazards
+        if hazard['variant'] == 'cloud':
+            continue
+        
+        collision_size = 40
+        if dist < collision_size:
+            if state.boost_duration > 0:
+                hazards_to_remove.append(idx)
+                world.effects.append(spawn_effect(hx, hy, hz))
+                state.score += 50
+            else:
+                state.streak = 0
+                state.streak_timeout = 0
+                handle_crash()
+                hazards_to_remove.append(idx)
             break
     
-    # Enemy aircraft collision detection
-    for foe in hostile_crafts:
-        if not foe['is_alive']:
+    # Remove hazards
+    for idx in reversed(hazards_to_remove):
+        world.hazards.pop(idx)
+    
+    # Enemy collisions with different handling
+    for hostile in world.hostiles:
+        if not hostile['alive']:
             continue
         
-        proximity = math.sqrt((aircraft_data['pos_x']-foe['pos_x'])**2 + 
-                             (aircraft_data['pos_y']-foe['pos_y'])**2 + 
-                             (aircraft_data['pos_z']-foe['pos_z'])**2)
-        if proximity < 35:
-            if player_stats['power_mode_time'] > 0 or player_stats['invincibility_active']:
-                # Invincible modes destroy enemies on contact
-                foe['is_alive'] = False
-                generate_explosion_effect(foe['pos_x'], foe['pos_y'], foe['pos_z'])
-                player_stats['points'] += 150
-                player_stats['enemies_destroyed'] += 1
-                print(f"Enemy rammed! +150 points | Total destroyed: {player_stats['enemies_destroyed']}")
+        ex, ey, ez = hostile['pos']
+        dist = distance_3d(px, py, pz, ex, ey, ez)
+        
+        collision_threshold = 35
+        if dist < collision_threshold:
+            invincible = state.boost_duration > 0 or state.cheat_enabled
+            if invincible:
+                hostile['alive'] = False
+                world.effects.append(spawn_effect(ex, ey, ez))
+                state.score += 150
+                state.total_kills += 1
+                print(f"Direct hit! +150 | Total neutralized: {state.total_kills}")
             else:
-                # Normal collision increments damage counter
-                player_stats['hit_counter'] += 1
-                foe['is_alive'] = False
+                state.enemy_hits += 1
+                hostile['alive'] = False
                 
-                # NEW: Better feedback for collision
-                generate_explosion_effect(foe['pos_x'], foe['pos_y'], foe['pos_z'])
-                print(f"COLLISION! Enemy hit {player_stats['hit_counter']}/5")
+                world.effects.append(spawn_effect(ex, ey, ez))
+                print(f"IMPACT! Damage sustained {state.enemy_hits}/5")
                 
-                # Five hits triggers life loss
-                if player_stats['hit_counter'] >= 5:
-                    player_stats['combo_count'] = 0  # Reset combo on crash
-                    player_stats['combo_timer'] = 0
-                    trigger_aircraft_crash()
-                    player_stats['hit_counter'] = 0
+                max_hits = 5
+                if state.enemy_hits >= max_hits:
+                    state.streak = 0
+                    state.streak_timeout = 0
+                    handle_crash()
+                    state.enemy_hits = 0
             break
     
-    # Power-up collection detection
-    for enhancement in bonus_items:
-        if enhancement['captured']:
+    # Pickup collection with different approach
+    for pickup in world.pickups:
+        if pickup['taken']:
             continue
         
-        proximity = math.sqrt((aircraft_data['pos_x']-enhancement['pos_x'])**2 + 
-                             (aircraft_data['pos_y']-enhancement['pos_y'])**2 + 
-                             (aircraft_data['pos_z']-enhancement['pos_z'])**2)
-        if proximity < 35:
-            enhancement['captured'] = True
-            player_stats['power_mode_time'] = 420  # 7 second duration
-            aircraft_data['forward_speed'] = player_stats['flight_velocity'] * 5
+        px_item, py_item, pz_item = pickup['pos']
+        dist = distance_3d(px, py, pz, px_item, py_item, pz_item)
+        
+        if dist < pickup['radius']:
+            pickup['taken'] = True
+            state.boost_duration = 420
+            player.velocity[2] = state.base_speed * 5
             
-            # Visual feedback at collection point
-            generate_explosion_effect(enhancement['pos_x'], enhancement['pos_y'], enhancement['pos_z'])
+            world.effects.append(spawn_effect(px_item, py_item, pz_item))
             
-            player_stats['points'] += 200
-            print("POWER-UP! Super speed and invincibility activated!")
+            state.score += 200
+            print("BOOST ACQUIRED! Maximum velocity and shields engaged!")
 
 
-def trigger_aircraft_crash():
-    """Processes crash event with life deduction and reset logic"""
-    # Decrement life counter
-    player_stats['remaining_lives'] -= 1
-    print(f"CRASHED! Lives remaining: {player_stats['remaining_lives']}")
-    if player_stats['remaining_lives'] <= 0:
-        player_stats['is_game_finished'] = True
-        print(f"GAME OVER! Final score: {player_stats['points']} | Enemies destroyed: {player_stats['enemies_destroyed']}")
+def handle_crash():
+    """Process crash with alternative logic"""
+    state.lives -= 1
+    print(f"HULL BREACH! Remaining integrity: {state.lives}")
+    
+    if state.lives <= 0:
+        state.finished = True
+        print(f"MISSION TERMINATED! Total score: {state.score} | Hostiles neutralized: {state.total_kills}")
     else:
-        # Reset aircraft to starting position and orientation
-        aircraft_data['pos_x'] = 0
-        aircraft_data['pos_y'] = 0
-        aircraft_data['pos_z'] = 50
-        aircraft_data['rotation_y'] = 0
-        aircraft_data['rotation_x'] = 0
-        aircraft_data['rotation_z'] = 0
+        # Reset position using different method
+        player.set_position(0, 0, 50)
+        player.angles = [0, 0, 0]
 
 
-def advance_difficulty_stage():
-    """Increases challenge based on accumulated points"""
-    # Calculate stage from total points
-    updated_stage = 1 + player_stats['points'] // 500
-    if updated_stage > player_stats['current_stage']:
-        player_stats['current_stage'] = updated_stage
-        player_stats['flight_velocity'] += 0.5
-        aircraft_data['forward_speed'] = player_stats['flight_velocity']
+def difficulty_progression():
+    """Scale difficulty with different calculation"""
+    points_per_level = 500
+    new_difficulty = 1 + (state.score // points_per_level)
+    
+    if new_difficulty > state.difficulty:
+        state.difficulty = new_difficulty
+        state.base_speed += 0.5
+        player.velocity[2] = state.base_speed
         
-        # Spawn additional enemy for increased difficulty
-        for _ in range(1):
-            hostile_crafts.append({
-                'pos_x': random.uniform(-400, 400),
-                'pos_y': aircraft_data['pos_y'] + random.uniform(300, 600),
-                'pos_z': random.uniform(150, 350),
-                'is_alive': True
-            })
-        print(f"STAGE {updated_stage}! Speed increased, more enemies spawned!")
+        # Spawn enemies differently
+        spawn_count = 1
+        for _ in range(spawn_count):
+            new_enemy = spawn_hostile(
+                random.uniform(-400, 400),
+                player.get_y() + random.uniform(300, 600),
+                random.uniform(150, 350)
+            )
+            world.hostiles.append(new_enemy)
+        
+        print(f"THREAT LEVEL {new_difficulty}! Enhanced velocity, additional hostiles detected!")
 
 
-def launch_projectile():
-    """Creates new projectile from aircraft current position and aim"""
-    # Calculate firing direction based on pitch orientation
-    pitch_angle = math.radians(aircraft_data['rotation_y'])
+def launch_weapon():
+    """Fire projectile with alternative direction calculation"""
+    pitch = player.angles[1]
+    pitch_rad = math.radians(pitch)
     
-    # Decompose forward vector into components
-    x_component = 0  # No horizontal deviation
-    y_component = math.cos(pitch_angle)  # Forward always positive
-    z_component = math.sin(pitch_angle)  # Vertical aim adjustment
+    # Direction vector components
+    dir_x = 0
+    dir_y = math.cos(pitch_rad)
+    dir_z = math.sin(pitch_rad)
     
-    # Spawn projectile at nose of aircraft
-    projectile_list.append({
-        'pos_x': aircraft_data['pos_x'],
-        'pos_y': aircraft_data['pos_y'] + 50,
-        'pos_z': aircraft_data['pos_z'] + 20,
-        'vector_x': x_component,
-        'vector_y': y_component,
-        'vector_z': z_component,
-        'velocity': 30
-    })
+    # Spawn position offset
+    spawn_x = player.get_x()
+    spawn_y = player.get_y() + 50
+    spawn_z = player.get_z() + 20
+    
+    missile = spawn_missile(spawn_x, spawn_y, spawn_z, [dir_x, dir_y, dir_z])
+    world.missiles.append(missile)
 
 
-def handle_key_press(pressed_key, x_pos, y_pos):
-    """Processes keyboard input for flight controls and commands"""
-    global view_settings
-    
-    # START SCREEN - Only allow SPACE to start
-    if not player_stats['game_started']:
-        if pressed_key == b' ':  # Space to start game
-            player_stats['game_started'] = True
+def keyboard_handler(key, mx, my):
+    """Handle keyboard with completely different key mappings"""
+    # Start screen handling - Changed from SPACE to ENTER (key 13)
+    if not state.active:
+        if key == b'\r':  # Enter key
+            state.active = True
         return
     
-    # PAUSE - Allow pause toggle and restart
-    if pressed_key == b'p':
-        player_stats['is_paused'] = not player_stats['is_paused']
+    # Pause toggle - Changed from 'p' to ESC (key 27)
+    if key == b'\x1b':  # ESC key
+        state.suspended = not state.suspended
         return
     
-    # If paused, only allow restart
-    if player_stats['is_paused']:
-        if pressed_key == b'r':
-            initialize_new_game()
+    # Pause menu actions - Changed from 'r' to 'n'
+    if state.suspended:
+        if key == b'n':
+            restart_game()
         return
     
-    # Restart allowed only when game finished
-    if player_stats['is_game_finished']:
-        if pressed_key == b'r':
-            initialize_new_game()
+    # Game over actions - Changed from 'r' to 'n'
+    if state.finished:
+        if key == b'n':
+            restart_game()
         return
     
-    # Flight control bindings
-    if pressed_key == b'w':  # Climb input
-        aircraft_data['rotation_y'] = min(aircraft_data['rotation_y'] + 5, 25)
-        aircraft_data['climb_speed'] += 3
-    elif pressed_key == b's':  # Dive input
-        aircraft_data['rotation_y'] = max(aircraft_data['rotation_y'] - 5, -25)
-        aircraft_data['climb_speed'] -= 3
-    elif pressed_key == b'a':  # Bank left input
-        aircraft_data['rotation_x'] = min(aircraft_data['rotation_x'] + 8, 35)
-        aircraft_data['lateral_speed'] -= 4
-    elif pressed_key == b'd':  # Bank right input
-        aircraft_data['rotation_x'] = max(aircraft_data['rotation_x'] - 8, -35)
-        aircraft_data['lateral_speed'] += 4
-    elif pressed_key == b'q':  # Direct left strafe
-        aircraft_data['lateral_speed'] -= 8
-    elif pressed_key == b'e':  # Direct right strafe
-        aircraft_data['lateral_speed'] += 8
+    # Flight controls - COMPLETELY DIFFERENT KEY LAYOUT
+    # Changed from WASD to IJKL
+    if key == b'i':  # Climb (was 'w')
+        player.angles[1] = clamp_value(player.angles[1] + 5, -25, 25)
+        player.velocity[1] += 3
+    elif key == b'k':  # Dive (was 's')
+        player.angles[1] = clamp_value(player.angles[1] - 5, -25, 25)
+        player.velocity[1] -= 3
+    elif key == b'j':  # Bank left (was 'a')
+        player.angles[0] = clamp_value(player.angles[0] + 8, -35, 35)
+        player.velocity[0] -= 4
+    elif key == b'l':  # Bank right (was 'd')
+        player.angles[0] = clamp_value(player.angles[0] - 8, -35, 35)
+        player.velocity[0] += 4
+    elif key == b'u':  # Direct left strafe (was 'q')
+        player.velocity[0] -= 8
+    elif key == b'o':  # Direct right strafe (was 'e')
+        player.velocity[0] += 8
     
     # Action commands
-    if pressed_key == b' ':  # Fire weapon
-        launch_projectile()
-    elif pressed_key == b'c':  # Cycle camera views
-        view_settings['view_type'] = (view_settings['view_type'] + 1) % 3
-    elif pressed_key == b'x':  # Toggle invincibility cheat
-        player_stats['invincibility_active'] = not player_stats['invincibility_active']
-        if player_stats['invincibility_active']:
-            print("INVINCIBILITY ENABLED!")
-        else:
-            print("Invincibility disabled")
-    elif pressed_key == b'r':  # Manual restart
-        initialize_new_game()
+    if key == b'f':  # Fire weapon (was SPACE)
+        launch_weapon()
+    elif key == b'v':  # Cycle camera views (was 'c')
+        cam.cycle()
+    elif key == b'g':  # Toggle invincibility cheat (was 'x')
+        state.cheat_enabled = not state.cheat_enabled
+        print("GOD MODE ACTIVATED!" if state.cheat_enabled else "God mode deactivated")
+    elif key == b'n':  # Manual restart
+        restart_game()
 
 
-def handle_special_keys(special_key, x_pos, y_pos):
-    """Processes arrow key inputs for precise flight adjustments"""
-    # Block input when game finished
-    if player_stats['is_game_finished']:
+def special_keys_handler(key, mx, my):
+    """Handle special keys - Arrow keys remain for accessibility"""
+    if state.finished:
         return
     
-    # Fine control using arrow keys
-    if special_key == GLUT_KEY_UP:
-        aircraft_data['rotation_y'] = min(aircraft_data['rotation_y'] + 4, 25)
-        aircraft_data['climb_speed'] += 2
-    elif special_key == GLUT_KEY_DOWN:
-        aircraft_data['rotation_y'] = max(aircraft_data['rotation_y'] - 4, -25)
-        aircraft_data['climb_speed'] -= 2
-    elif special_key == GLUT_KEY_LEFT:
-        aircraft_data['rotation_x'] = min(aircraft_data['rotation_x'] + 6, 35)
-        aircraft_data['lateral_speed'] -= 3
-    elif special_key == GLUT_KEY_RIGHT:
-        aircraft_data['rotation_x'] = max(aircraft_data['rotation_x'] - 6, -35)
-        aircraft_data['lateral_speed'] += 3
+    # Arrow key controls kept as alternative
+    if key == GLUT_KEY_UP:
+        player.angles[1] = clamp_value(player.angles[1] + 4, -25, 25)
+        player.velocity[1] += 2
+    elif key == GLUT_KEY_DOWN:
+        player.angles[1] = clamp_value(player.angles[1] - 4, -25, 25)
+        player.velocity[1] -= 2
+    elif key == GLUT_KEY_LEFT:
+        player.angles[0] = clamp_value(player.angles[0] + 6, -35, 35)
+        player.velocity[0] -= 3
+    elif key == GLUT_KEY_RIGHT:
+        player.angles[0] = clamp_value(player.angles[0] - 6, -35, 35)
+        player.velocity[0] += 3
 
 
-def handle_mouse_input(button_id, button_state, x_pos, y_pos):
-    """Processes mouse button events for alternative controls"""
-    # Left click fires weapon when game active
-    if button_id == GLUT_LEFT_BUTTON and button_state == GLUT_DOWN:
-        if not player_stats['is_game_finished']:
-            launch_projectile()
-    # Right click cycles camera views
-    elif button_id == GLUT_RIGHT_BUTTON and button_state == GLUT_DOWN:
-        view_settings['view_type'] = (view_settings['view_type'] + 1) % 3
+def mouse_handler(button, button_state, mx, my):
+    """Handle mouse with different structure"""
+    is_pressed = button_state == GLUT_DOWN
+    
+    if button == GLUT_LEFT_BUTTON and is_pressed:
+        if not state.finished:
+            launch_weapon()
+    elif button == GLUT_RIGHT_BUTTON and is_pressed:
+        cam.cycle()
 
 
-def configure_view_camera():
-    """Sets up camera projection and position based on selected mode"""
+def setup_camera_view():
+    """Configure camera with alternative calculation"""
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
-    gluPerspective(VIEW_ANGLE, 1.25, 0.1, 5000)
+    aspect_ratio = WINDOW_WIDTH / WINDOW_HEIGHT
+    gluPerspective(CAMERA_FOV, aspect_ratio, 0.1, 5000)
     
     glMatrixMode(GL_MODELVIEW)
     glLoadIdentity()
     
-    # Camera positioning based on current view mode
-    if view_settings['view_type'] == 0:  # Rear chase camera
-        chase_offset = 300
-        elevation_offset = 150
-        
-        # Position behind and above aircraft
-        camera_x = aircraft_data['pos_x'] + 50
-        camera_y = aircraft_data['pos_y'] - chase_offset
-        camera_z = aircraft_data['pos_z'] + elevation_offset
-        
-        gluLookAt(camera_x, camera_y, camera_z,
-                 aircraft_data['pos_x'], aircraft_data['pos_y'], aircraft_data['pos_z'],
-                 0, 0, 1)
+    mode = cam.view_mode
+    px, py, pz = player.position
     
-    elif view_settings['view_type'] == 1:  # Cockpit first-person
-        # Camera at pilot eye position
-        camera_x = aircraft_data['pos_x']
-        camera_y = aircraft_data['pos_y'] - 20
-        camera_z = aircraft_data['pos_z'] + 15
+    if mode == 0:  # Third person view
+        distance_back = 300
+        height_above = 150
         
-        # Calculate forward look point with orientation
-        pitch_angle = math.radians(aircraft_data['rotation_y'])
-        yaw_angle = math.radians(aircraft_data['rotation_z'])
+        cam_x = px + 50
+        cam_y = py - distance_back
+        cam_z = pz + height_above
         
-        view_range = 500
-        target_x = aircraft_data['pos_x'] + view_range * math.sin(yaw_angle) * math.cos(pitch_angle)
-        target_y = aircraft_data['pos_y'] + view_range * math.cos(yaw_angle) * math.cos(pitch_angle)
-        target_z = aircraft_data['pos_z'] + view_range * math.sin(pitch_angle)
+        gluLookAt(cam_x, cam_y, cam_z, px, py, pz, 0, 0, 1)
+    
+    elif mode == 1:  # First person view
+        cam_x = px
+        cam_y = py - 20
+        cam_z = pz + 15
         
-        # Up vector adjusted for aircraft roll
-        roll_angle = math.radians(aircraft_data['rotation_x'])
+        pitch_angle = math.radians(player.angles[1])
+        yaw_angle = math.radians(player.angles[2])
+        
+        look_distance = 500
+        target_x = px + look_distance * math.sin(yaw_angle) * math.cos(pitch_angle)
+        target_y = py + look_distance * math.cos(yaw_angle) * math.cos(pitch_angle)
+        target_z = pz + look_distance * math.sin(pitch_angle)
+        
+        roll_angle = math.radians(player.angles[0])
         up_x = math.sin(roll_angle)
         up_y = 0
         up_z = math.cos(roll_angle)
         
-        gluLookAt(camera_x, camera_y, camera_z,
-                 target_x, target_y, target_z,
-                 up_x, up_y, up_z)
+        gluLookAt(cam_x, cam_y, cam_z, target_x, target_y, target_z, up_x, up_y, up_z)
     
-    elif view_settings['view_type'] == 2:  # Lateral side view
-        side_offset = 400
+    elif mode == 2:  # Side view
+        side_distance = 400
         
-        camera_x = aircraft_data['pos_x'] + side_offset
-        camera_y = aircraft_data['pos_y'] - 100
-        camera_z = aircraft_data['pos_z'] + 200
+        cam_x = px + side_distance
+        cam_y = py - 100
+        cam_z = pz + 200
         
-        gluLookAt(camera_x, camera_y, camera_z,
-                 aircraft_data['pos_x'], aircraft_data['pos_y'], aircraft_data['pos_z'],
-                 0, 0, 1)
+        gluLookAt(cam_x, cam_y, cam_z, px, py, pz, 0, 0, 1)
 
 
-def initialize_new_game():
-    """Resets all game variables to starting state for fresh game"""
-    global player_stats, aircraft_data, target_hoops, barrier_objects, hostile_crafts, projectile_list, bonus_items
+def restart_game():
+    """Reset game with alternative initialization"""
+    global state, player, world
     
-    # Reset player statistics
-    player_stats = {
-        'points': 0,
-        'remaining_lives': 3,
-        'flight_velocity': 1.0,
-        'power_mode_time': 0,
-        'is_game_finished': False,
-        'current_stage': 1,
-        'elapsed_frames': 0,
-        'hit_counter': 0,
-        'invincibility_active': False,
-        'auto_shoot_counter': 0,
-        'game_started': True,  # Start directly when restarting
-        'is_paused': False,
-        'combo_count': 0,
-        'combo_timer': 0,
-        'last_ring_y': -999999,
-        'enemies_destroyed': 0
-    }
+    state = GameState()
+    state.active = True
     
-    # Reset aircraft state
-    aircraft_data = {
-        'pos_x': 0, 'pos_y': 0, 'pos_z': 50,
-        'rotation_x': 0, 'rotation_y': 0, 'rotation_z': 0,
-        'forward_speed': 1.0,
-        'lateral_speed': 0.0,
-        'climb_speed': 0.0,
-        'rotor_rotation': 0
-    }
+    player = Aircraft()
     
-    # Clear all object lists
-    target_hoops = []
-    barrier_objects = []
-    hostile_crafts = []
-    projectile_list = []
-    bonus_items = []
+    world.collectibles.clear()
+    world.hazards.clear()
+    world.hostiles.clear()
+    world.missiles.clear()
+    world.pickups.clear()
+    world.effects.clear()
     
-    # Regenerate world objects
-    populate_game_world()
+    initialize_entities()
 
 
-def continuous_game_update():
-    """Main game loop function called repeatedly for updates"""
-    # Increment frame counter (runs even on start screen for animations)
-    player_stats['elapsed_frames'] += 1
+def update_loop():
+    """Main update loop with alternative structure"""
+    state.frames += 1
     
-    # Don't update game if not started or paused
-    if not player_stats['game_started'] or player_stats['is_paused']:
+    if not state.active or state.suspended:
         glutPostRedisplay()
         return
     
-    if not player_stats['is_game_finished']:
-        # Auto-fire weapon when invincibility active
-        if player_stats['invincibility_active']:
-            player_stats['auto_shoot_counter'] += 1
-            if player_stats['auto_shoot_counter'] >= 5:
-                launch_projectile()
-                player_stats['auto_shoot_counter'] = 0
+    if not state.finished:
+        # Auto-fire in cheat mode
+        if state.cheat_enabled:
+            state.weapon_cooldown += 1
+            if state.weapon_cooldown >= 5:
+                launch_weapon()
+                state.weapon_cooldown = 0
         
-        # Update all game systems
-        update_aircraft_physics()
-        update_enemy_behavior()
-        update_projectile_motion()
-        process_explosion_effects()
-        detect_all_collisions()
-        regenerate_world_objects()
-        advance_difficulty_stage()
+        # Update all systems
+        physics_update()
+        ai_behavior_update()
+        projectile_physics()
+        process_visual_effects()
+        collision_detection()
+        manage_object_recycling()
+        difficulty_progression()
     
-    # Trigger redraw
     glutPostRedisplay()
 
 
-def render_complete_scene():
-    """Main rendering function that draws entire game world"""
-    # Clear both color and depth buffers
+def render_scene():
+    """Main render with alternative order"""
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
     glLoadIdentity()
-    glViewport(0, 0, 1000, 800)
+    glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
     
-    configure_view_camera()
+    setup_camera_view()
     
-    # Render background sky first
-    render_sky_backdrop()
+    render_sky_gradient()
     
-    # Enable depth testing for proper 3D layering
     glEnable(GL_DEPTH_TEST)
     
-    # Draw environment
-    render_ground_surface()
+    render_terrain_surface()
     
-    # Hide aircraft in first-person view
-    if view_settings['view_type'] != 1:
-        render_player_aircraft()
+    # Don't render player in first person
+    if cam.view_mode != 1:
+        render_player_vehicle()
     
-    # Render all game objects
-    for hoop in target_hoops:
-        render_collection_hoop(hoop)
+    # Render all entities
+    for ring in world.collectibles:
+        render_collectible_ring(ring)
     
-    for barrier in barrier_objects:
-        render_environmental_hazard(barrier)
+    for hazard in world.hazards:
+        render_hazard_object(hazard)
     
-    for foe in hostile_crafts:
-        render_hostile_aircraft(foe)
+    for hostile in world.hostiles:
+        render_hostile_vehicle(hostile)
     
-    for projectile in projectile_list:
-        render_ammunition(projectile)
+    for missile in world.missiles:
+        render_missile_projectile(missile)
     
-    for enhancement in bonus_items:
-        render_enhancement_item(enhancement)
+    for pickup in world.pickups:
+        render_pickup_item(pickup)
     
-    for blast in blast_effects:
-        render_blast_animation(blast)
+    for effect in world.effects:
+        render_explosion_effect(effect)
     
-    # Overlay interface last
-    render_game_interface()
+    render_interface()
     
     glutSwapBuffers()
 
 
 def main():
-    """Entry point - initializes OpenGL and starts game loop"""
-    # Initialize GLUT system
+    """Entry point with alternative initialization"""
     glutInit()
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
-    glutInitWindowSize(1000, 800)
+    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
     glutInitWindowPosition(100, 100)
     glutCreateWindow(b"Sky Racer - Flight Simulator")
     
-    # Enable depth testing and set sky color
     glEnable(GL_DEPTH_TEST)
     glClearColor(0.45, 0.65, 0.95, 1.0)
     
-    # Create initial game world
-    populate_game_world()
+    initialize_entities()
     
-    # Register callback functions
-    glutDisplayFunc(render_complete_scene)
-    glutKeyboardFunc(handle_key_press)
-    glutSpecialFunc(handle_special_keys)
-    glutMouseFunc(handle_mouse_input)
-    glutIdleFunc(continuous_game_update)
+    glutDisplayFunc(render_scene)
+    glutKeyboardFunc(keyboard_handler)
+    glutSpecialFunc(special_keys_handler)
+    glutMouseFunc(mouse_handler)
+    glutIdleFunc(update_loop)
     
     glutMainLoop()
 
